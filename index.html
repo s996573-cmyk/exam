@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>監考查詢系統</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <style>
+        :root { 
+            --primary-color: #2c3e50; 
+            --secondary-color: #3498db; 
+            --standby-color: #e67e22; 
+            --bg-color: #f4f7f6; 
+            --card-bg: #ffffff; 
+            --text-color: #333333;
+        }
+        body { font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; background-color: var(--bg-color); margin: 0; padding: 15px; color: var(--text-color); }
+        .container { max-width: 500px; margin: 0 auto; }
+        h1 { text-align: center; color: var(--primary-color); font-size: 24px; margin-bottom: 15px; }
+        
+        /* 雙重保障：手動載入區域樣式 */
+        .upload-box { background: #e8f4fd; border: 1px dashed var(--secondary-color); padding: 12px; border-radius: 12px; margin-bottom: 15px; font-size: 14px; text-align: center; color: #2980b9; }
+        .upload-box input { display: none; }
+        .upload-btn { background: var(--secondary-color); color: white; padding: 6px 14px; border-radius: 6px; display: inline-block; cursor: pointer; margin-top: 6px; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); }
+        .status-text { font-size: 13px; color: #7f8c8d; margin-top: 5px; font-weight: bold; }
+
+        .control-panel { background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
+        .form-group { margin-bottom: 15px; }
+        .form-group:last-child { margin-bottom: 0; }
+        label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 15px; color: var(--primary-color); }
+        select, input[type="date"] { width: 100%; padding: 12px; border: 1px solid #dcdde1; border-radius: 8px; font-size: 16px; box-sizing: border-box; background-color: #fcfcfc; outline: none; }
+        
+        .card { background: var(--card-bg); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 15px; border-left: 5px solid var(--secondary-color); }
+        .card.standby { border-left: 5px solid var(--standby-color); }
+        .card-header { background: #ecf0f1; padding: 12px 15px; font-weight: bold; font-size: 16px; color: var(--primary-color); display: flex; justify-content: space-between; align-items: center; }
+        .card.standby .card-header { background: #fdf3e7; color: #d35400; }
+        .card-body { padding: 15px; font-size: 15px; line-height: 1.6; }
+        .card-body p { margin: 6px 0; border-bottom: 1px dashed #eee; padding-bottom: 6px; }
+        .card-body p:last-child { border-bottom: none; padding-bottom: 0; }
+        .tag { background: var(--secondary-color); color: white; padding: 3px 8px; border-radius: 4px; font-size: 12px; }
+        .tag.standby-tag { background: var(--standby-color); }
+        .empty-state { text-align: center; padding: 30px 15px; color: #7f8c8d; background: var(--card-bg); border-radius: 12px; font-size: 15px; line-height: 1.5; }
+        .hint-text { font-size: 13px; color: #95a5a6; margin-top: 8px; display: block; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>📝 監考查詢系統</h1>
+        
+        <div class="upload-box">
+            <span>💡 提示：系統會自動嘗試從 GitHub 載入數據檔。</span><br>
+            <label class="upload-btn" for="fileInput">🎯 手動選取 Excel 檔案</label>
+            <input type="file" id="fileInput" accept=".xlsx, .xls">
+            <div id="statusMessage" class="status-text">正在自動偵測伺服器檔案...</div>
+        </div>
+
+        <div class="control-panel">
+            <div class="form-group">
+                <label for="teacherSelect">👨‍🏫 選擇監考老師：</label>
+                <select id="teacherSelect">
+                    <option value="">請先載入 Excel 數據</option>
+                </select>
+            </div>
+            <div class="form-group">
+                <label for="dateSelect">📅 選擇日期：</label>
+                <input type="date" id="dateSelect">
+            </div>
+        </div>
+        <div id="results"><div class="empty-state">等待數據載入中...</div></div>
+    </div>
+
+    <script>
+        let examData = [];
+        // 潛在可能被命名的檔名清單（自動輪詢）
+        const possibleFiles = [
+            'exam.xlsx',
+            '監考總表.xlsx',
+            'Final_Exam_監考總表_(2.6.2026)_FinalVersion.xlsx'
+        ];
+
+        function getTodayStr() {
+            const today = new Date();
+            const yyyy = today.getFullYear();
+            const mm = String(today.getMonth() + 1).padStart(2, '0');
+            const dd = String(today.getDate()).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
+        }
+
+        function normalizeExcelDate(excelDate) {
+            if (!excelDate) return "";
+            const strDate = String(excelDate).trim();
+            if (strDate.match(/^\d{4}-\d{2}-\d{2}$/)) return strDate;
+            try {
+                const d = new Date(strDate);
+                if (!isNaN(d.getTime())) {
+                    const y = d.getFullYear();
+                    const m = String(d.getMonth() + 1).padStart(2, '0');
+                    const day = String(d.getDate()).padStart(2, '0');
+                    return `${y}-${m}-${day}`;
+                }
+                return strDate; 
+            } catch (e) { return strDate; }
+        }
+
+        // 自動執行：輪詢載入 GitHub 上的檔案
+        async function autoLoadFromServer() {
+            const statusDiv = document.getElementById('statusMessage');
+            let success = false;
+
+            for (let fileName of possibleFiles) {
+                try {
+                    // 加上隨機時間戳記防瀏覽器快取
+                    const response = await fetch(encodeURI(fileName) + '?t=' + new Date().getTime());
+                    if (response.ok) {
+                        const arrayBuffer = await response.arrayBuffer();
+                        parseExcelData(arrayBuffer);
+                        statusDiv.innerHTML = `✅ 已成功自伺服器載入：<b style="color:#27ae60;">${fileName}</b>`;
+                        success = true;
+                        break;
+                    }
+                } catch (e) { console.log(`嘗試載入 ${fileName} 失敗，尋找下一個...`); }
+            }
+
+            if (!success) {
+                statusDiv.innerHTML = `⚠️ 尚未在 GitHub 找到預設檔案。請點上方按鈕手動選取 Excel 檔。`;
+                document.getElementById('results').innerHTML = `<div class="empty-state">請點擊上方按鈕，選取您的 <b>監考總表 Excel 檔案</b> 以解鎖查詢。</div>`;
+            }
+        }
+
+        // 監聽手動選擇檔案按鈕
+        document.getElementById('fileInput').addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            
+            const statusDiv = document.getElementById('statusMessage');
+            statusDiv.innerText = `正在讀取本機檔案: ${file.name}...`;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                try {
+                    parseExcelData(e.target.result);
+                    statusDiv.innerHTML = `✅ 已成功手動載入本機檔案：<b style="color:#27ae60;">${file.name}</b>`;
+                } catch (err) {
+                    statusDiv.innerHTML = `❌ 檔案解析失敗：${err.message}`;
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
+        // 解析 Excel 核心函式
+        function parseExcelData(arrayBuffer) {
+            const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+            const sheet = workbook.Sheets["每個老師監考表"] || workbook.Sheets[workbook.SheetNames[0]];
+            let rawData = XLSX.utils.sheet_to_json(sheet, { raw: false });
+
+            if (!rawData || rawData.length === 0) throw new Error("Excel 工作表內無有效數據。");
+
+            // 自動填補空白老師編號 (向下填補邏輯)
+            let lastTeacher = "";
+            rawData.forEach(row => {
+                if (row['監考老師'] !== undefined && String(row['監考老師']).trim() !== "") {
+                    lastTeacher = String(row['監考老師']).trim();
+                } else if (lastTeacher !== "") {
+                    row['監考老師'] = lastTeacher;
+                }
+            });
+
+            examData = rawData;
+            setupUI();
+        }
+
+        function setupUI() {
+            const teacherSet = new Set();
+            examData.forEach(row => {
+                if (row['監考老師']) teacherSet.add(String(row['監考老師']).trim());
+            });
+
+            const teachers = Array.from(teacherSet).sort((a, b) => {
+                return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
+            });
+
+            const select = document.getElementById('teacherSelect');
+            select.innerHTML = '';
+            teachers.forEach(t => {
+                const option = document.createElement('option');
+                option.value = t; option.textContent = t;
+                select.appendChild(option);
+            });
+
+            // 預設指定為 218 號老師
+            if (teacherSet.has("218")) { select.value = "218"; }
+
+            // 預設日期為當日
+            document.getElementById('dateSelect').value = getTodayStr();
+
+            select.onchange = renderResults;
+            document.getElementById('dateSelect').onchange = renderResults;
+
+            renderResults();
+        }
+
+        function renderResults() {
+            const selectedTeacher = document.getElementById('teacherSelect').value;
+            const selectedDate = document.getElementById('dateSelect').value;
+            const resultsContainer = document.getElementById('results');
+
+            if (!selectedTeacher || examData.length === 0) {
+                resultsContainer.innerHTML = `<div class="empty-state">☝️ 請先完成 Excel 數據載入並選擇老師</div>`;
+                return;
+            }
+
+            const filteredData = examData.filter(row => {
+                const tName = row['監考老師'] ? String(row['監考老師']).trim() : '';
+                const rawDate = row['日期'] ? String(row['日期']).trim() : '';
+                return (tName === selectedTeacher) && (normalizeExcelDate(rawDate) === selectedDate);
+            });
+
+            if (filteredData.length === 0) {
+                resultsContainer.innerHTML = `
+                    <div class="empty-state">
+                        ✅ <b>${selectedDate}</b> 當天沒有您的監考或後備任務紀錄。
+                        <span class="hint-text">💡 提示：如果您想測試功能，請將日期切換至有考試的日期（例如 2026-06-05 或 2026-06-08）。</span>
+                    </div>`;
+                return;
+            }
+
+            let htmlContent = '';
+            filteredData.forEach(item => {
+                const role = item['崗位'] ? String(item['崗位']).trim() : '監考員';
+                const rawSubject = item['科目'] ? String(item['科目']).trim() : '';
+                const isStandby = role.includes('後備') || rawSubject.includes('後備');
+
+                const startTime = item['到場'] ? String(item['到場']).trim() : '';
+                const endTime = item['結束'] ? String(item['結束']).trim() : '';
+                let timeStr = "特殊時段";
+                if (startTime && endTime) {
+                    timeStr = `${startTime} - ${endTime}`;
+                } else if (isStandby) {
+                    timeStr = "全日候命";
+                }
+
+                const location = item['地點'] ? String(item['地點']).trim() : (isStandby ? '校務處' : '--');
+                const subject = rawSubject || (isStandby ? '後備當值' : '--');
+                const grade = item['級號'] ? String(item['級號']).trim() : '--';
+                const klass = item['班/組別'] ? String(item['班/組別']).trim() : '--';
+                
+                let gradeClassStr = '--';
+                if (grade !== '--' || klass !== '--') {
+                    gradeClassStr = `${grade === '--' ? '' : grade} ${klass === '--' ? '' : klass}`.trim();
+                }
+
+                htmlContent += `
+                    <div class="card ${isStandby ? 'standby' : ''}">
+                        <div class="card-header">
+                            <span>🕒 ${timeStr}</span>
+                            <span class="tag ${isStandby ? 'standby-tag' : ''}">${role}</span>
+                        </div>
+                        <div class="card-body">
+                            <p><strong>📍 地點：</strong> ${location}</p>
+                            <p><strong>📚 科目：</strong> ${subject}</p>
+                            <p><strong>👥 級別：</strong> ${gradeClassStr}</p>
+                        </div>
+                    </div>
+                `;
+            });
+
+            resultsContainer.innerHTML = htmlContent;
+        }
+
+        // 網頁開啟時自動觸發自動載入
+        window.onload = autoLoadFromServer;
+    </script>
+</body>
+</html>
