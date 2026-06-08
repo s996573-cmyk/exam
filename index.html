@@ -84,7 +84,7 @@
 
         async function init() {
             try {
-                const response = await fetch('exam.xlsx?t=' + new Date().getTime());
+                const response = await fetch('/exam/exam.xlsx?t=' + new Date().getTime());
                 if (!response.ok) throw new Error(`找不到檔案 (HTTP ${response.status})，請確認儲存庫內有名為 exam.xlsx 的檔案。`);
                 
                 const arrayBuffer = await response.arrayBuffer();
