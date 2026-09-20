@@ -6,30 +6,33 @@
     <title>監考查詢系統</title>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <style>
-        :root { 
-            --primary-color: #2c3e50; 
-            --secondary-color: #3498db; 
-            --standby-color: #e67e22; 
-            --bg-color: #f4f7f6; 
-            --card-bg: #ffffff; 
+        :root {
+            --primary-color: #2c3e50;
+            --secondary-color: #3498db;
+            --standby-color: #e67e22;
+            --bg-color: #f4f7f6;
+            --card-bg: #ffffff;
             --text-color: #333333;
         }
         body { font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif; background-color: var(--bg-color); margin: 0; padding: 15px; color: var(--text-color); }
         .container { max-width: 500px; margin: 0 auto; }
         h1 { text-align: center; color: var(--primary-color); font-size: 24px; margin-bottom: 15px; }
-        
-        /* 雙重保障：手動載入區域樣式 */
+
         .upload-box { background: #e8f4fd; border: 1px dashed var(--secondary-color); padding: 12px; border-radius: 12px; margin-bottom: 15px; font-size: 14px; text-align: center; color: #2980b9; }
         .upload-box input { display: none; }
-        .upload-btn { background: var(--secondary-color); color: white; padding: 6px 14px; border-radius: 6px; display: inline-block; cursor: pointer; margin-top: 6px; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); }
-        .status-text { font-size: 13px; color: #7f8c8d; margin-top: 5px; font-weight: bold; }
+        .upload-btn { background: var(--secondary-color); color: white; padding: 8px 16px; border-radius: 6px; display: inline-block; cursor: pointer; margin-top: 6px; font-weight: bold; font-size: 14px; box-shadow: 0 2px 4px rgba(52, 152, 219, 0.2); }
+        .upload-btn:hover { background: #2980b9; }
+        .status-text { font-size: 13px; color: #7f8c8d; margin-top: 8px; font-weight: bold; line-height: 1.4; }
+        .format-badge { display: inline-block; background: #27ae60; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px; margin-left: 4px; }
+        .format-badge.master { background: #8e44ad; }
+        .format-badge.flat { background: #2980b9; }
 
         .control-panel { background: var(--card-bg); padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 20px; }
         .form-group { margin-bottom: 15px; }
         .form-group:last-child { margin-bottom: 0; }
         label { display: block; margin-bottom: 8px; font-weight: bold; font-size: 15px; color: var(--primary-color); }
-        select, input[type="date"] { width: 100%; padding: 12px; border: 1px solid #dcdde1; border-radius: 8px; font-size: 16px; box-sizing: border-box; background-color: #fcfcfc; outline: none; }
-        
+        select, input[type="date"], input[type="search"] { width: 100%; padding: 12px; border: 1px solid #dcdde1; border-radius: 8px; font-size: 16px; box-sizing: border-box; background-color: #fcfcfc; outline: none; }
+
         .card { background: var(--card-bg); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px rgba(0,0,0,0.05); margin-bottom: 15px; border-left: 5px solid var(--secondary-color); }
         .card.standby { border-left: 5px solid var(--standby-color); }
         .card-header { background: #ecf0f1; padding: 12px 15px; font-weight: bold; font-size: 16px; color: var(--primary-color); display: flex; justify-content: space-between; align-items: center; }
@@ -41,20 +44,25 @@
         .tag.standby-tag { background: var(--standby-color); }
         .empty-state { text-align: center; padding: 30px 15px; color: #7f8c8d; background: var(--card-bg); border-radius: 12px; font-size: 15px; line-height: 1.5; }
         .hint-text { font-size: 13px; color: #95a5a6; margin-top: 8px; display: block; }
+        .meta-line { font-size: 12px; color: #95a5a6; margin-top: 4px; }
     </style>
 </head>
 <body>
     <div class="container">
         <h1>📝 監考查詢系統</h1>
-        
+
         <div class="upload-box">
-            <!--<span>💡 提示：系統會自動載入數據檔。</span><br>
-            <label class="upload-btn" for="fileInput">🎯 手動選取 Excel 檔案</label>-->
+            <span>💡 可自動載入伺服器檔案，或手動上傳官方監考總表 / 平面表 Excel。</span><br>
+            <label class="upload-btn" for="fileInput">📂 選取 Excel 檔案</label>
             <input type="file" id="fileInput" accept=".xlsx, .xls">
             <div id="statusMessage" class="status-text">正在自動偵測伺服器檔案...</div>
         </div>
 
         <div class="control-panel">
+            <div class="form-group">
+                <label for="nameFilter">🔎 搜尋老師（編號或姓名）：</label>
+                <input type="search" id="nameFilter" placeholder="例如 218 或 Lee" autocomplete="off">
+            </div>
             <div class="form-group">
                 <label for="teacherSelect">👨‍🏫 選擇監考老師：</label>
                 <select id="teacherSelect">
@@ -70,132 +78,763 @@
     </div>
 
     <script>
+        /** @type {Array<{teacherCode:string, teacherName?:string, date:string, startTime:string, endTime:string, location:string, subject:string, role:string, gradeClass?:string}>} */
         let examData = [];
-        // 潛在可能被命名的檔名清單（自動輪詢）
+        let teacherNameMap = {}; // code -> name
+        let loadedFormat = ''; // 'flat' | 'master'
+        let loadedFileName = '';
+
         const possibleFiles = [
             'exam.xlsx',
             '監考總表.xlsx',
             'Final_Exam_監考總表_(2.6.2026)_FinalVersion.xlsx'
         ];
 
+        const TIME_RE = /(\d{1,2}:\d{2})\s*[-–—~至]\s*(\d{1,2}:\d{2})/;
+        const CODE_RE = /^\d{1,3}$/;
+        const SKIP_TOKENS = new Set(['ST1', 'IES2', 'i/c', 'IC', 'INV.', 'Time', 'Support', '-', '—', '–', '']);
+
         function getTodayStr() {
             const today = new Date();
-            const yyyy = today.getFullYear();
-            const mm = String(today.getMonth() + 1).padStart(2, '0');
-            const dd = String(today.getDate()).padStart(2, '0');
-            return `${yyyy}-${mm}-${dd}`;
+            return `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+        }
+
+        function pad2(n) { return String(n).padStart(2, '0'); }
+
+        function excelSerialToYmd(n) {
+            // Excel 1900 date system (SheetJS / Excel)
+            const utc = Date.UTC(1899, 11, 30) + Math.round(Number(n) * 86400000);
+            const d = new Date(utc);
+            return `${d.getUTCFullYear()}-${pad2(d.getUTCMonth() + 1)}-${pad2(d.getUTCDate())}`;
+        }
+
+        function parseDateCell(v) {
+            if (v === null || v === undefined || v === '') return null;
+            if (typeof v === 'number' && isFinite(v)) {
+                // Excel serial date (or time fraction ignored if < 1)
+                if (v > 20000 && v < 80000) return excelSerialToYmd(v);
+                return null;
+            }
+            if (Object.prototype.toString.call(v) === '[object Date]' && !isNaN(v.getTime())) {
+                // SheetJS cellDates often uses local midnight; use local getters (HK UTC+8)
+                return `${v.getFullYear()}-${pad2(v.getMonth() + 1)}-${pad2(v.getDate())}`;
+            }
+            const s = String(v).trim();
+            if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+            const first = s.split(/\r?\n/)[0].trim();
+            let m = first.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})$/);
+            if (m) {
+                let a = +m[1], b = +m[2], y = +m[3];
+                if (y < 100) y += 2000;
+                // HK school sheets use D/M/Y; if first part > 12 it must be day.
+                let day, mo;
+                if (a > 12 && b <= 12) { day = a; mo = b; }
+                else if (b > 12 && a <= 12) { day = b; mo = a; }
+                else { day = a; mo = b; } // default D/M/Y
+                if (mo < 1 || mo > 12 || day < 1 || day > 31) return null;
+                return `${y}-${pad2(mo)}-${pad2(day)}`;
+            }
+            return null;
         }
 
         function normalizeExcelDate(excelDate) {
-            if (!excelDate) return "";
+            const p = parseDateCell(excelDate);
+            if (p) return p;
+            if (!excelDate) return '';
             const strDate = String(excelDate).trim();
-            if (strDate.match(/^\d{4}-\d{2}-\d{2}$/)) return strDate;
+            if (/^\d{4}-\d{2}-\d{2}$/.test(strDate)) return strDate;
             try {
                 const d = new Date(strDate);
                 if (!isNaN(d.getTime())) {
-                    const y = d.getFullYear();
-                    const m = String(d.getMonth() + 1).padStart(2, '0');
-                    const day = String(d.getDate()).padStart(2, '0');
-                    return `${y}-${m}-${day}`;
+                    return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
                 }
-                return strDate; 
-            } catch (e) { return strDate; }
+            } catch (e) {}
+            return strDate;
         }
 
-        // 自動執行：輪詢載入 GitHub 上的檔案
-        async function autoLoadFromServer() {
-            const statusDiv = document.getElementById('statusMessage');
-            let success = false;
+        function formatTimeValue(v) {
+            if (v === null || v === undefined || v === '') return '';
+            if (v === '-' || v === '—' || v === '–') return '';
+            if (typeof v === 'number' && v >= 0 && v < 1) {
+                // Excel time fraction
+                const totalMins = Math.round(v * 24 * 60);
+                const h = Math.floor(totalMins / 60);
+                const m = totalMins % 60;
+                return `${h}:${pad2(m)}`;
+            }
+            if (v instanceof Date) return `${v.getHours()}:${pad2(v.getMinutes())}`;
+            const s = String(v).trim();
+            const m = s.match(/^(\d{1,2}):(\d{2})/);
+            if (m) return `${+m[1]}:${m[2]}`;
+            return s;
+        }
 
-            for (let fileName of possibleFiles) {
+        function parseSubjectTime(text) {
+            if (text === null || text === undefined || text === 0 || text === '0') return [];
+            const s = String(text).trim();
+            if (!s) return [];
+            if (/問卷/.test(s)) return [{ subject: '校本問卷調查', start: '', end: '' }];
+            const lines = s.replace(/\r/g, '').split('\n').map(l => l.trim()).filter(Boolean);
+            const results = [];
+            for (let i = 0; i < lines.length; i++) {
+                const ln = lines[i];
+                const m = ln.match(TIME_RE);
+                if (m) {
+                    const subj = ln.replace(TIME_RE, '').replace(/^[\s\-–—]+|[\s\-–—]+$/g, '').trim();
+                    results.push({ subject: subj || ln, start: m[1].replace(/^0/, '') === m[1] ? m[1] : m[1], end: m[2] });
+                    // normalize leading zero optional — keep as matched
+                    results[results.length - 1].start = m[1];
+                    results[results.length - 1].end = m[2];
+                } else if (i + 1 < lines.length && TIME_RE.test(lines[i + 1])) {
+                    const m2 = lines[i + 1].match(TIME_RE);
+                    results.push({ subject: ln, start: m2[1], end: m2[2] });
+                    i++;
+                } else {
+                    results.push({ subject: ln, start: '', end: '' });
+                }
+            }
+            return results;
+        }
+
+        function extractTeacherCodes(cellVal) {
+            if (cellVal === null || cellVal === undefined || cellVal === '') return [];
+            if (typeof cellVal === 'number') {
+                if (cellVal === 0) return [];
+                const n = Math.round(cellVal);
+                if (n >= 1 && n <= 999) return [String(n)];
+                return [];
+            }
+            const s = String(cellVal).trim();
+            if (!s || SKIP_TOKENS.has(s) || SKIP_TOKENS.has(s.toUpperCase())) return [];
+            if (/問卷|Speaking|SUBJECT|Date/i.test(s) && !/\d{1,3}/.test(s)) return [];
+            // Speaking lines with embedded codes handled separately
+            if (/Speaking/i.test(s)) return [];
+            if (/問卷/.test(s)) return [];
+            const codes = [];
+            s.split(/[\n,;/，、\s+]+/).forEach(part => {
+                part = part.trim();
+                if (!part || SKIP_TOKENS.has(part) || SKIP_TOKENS.has(part.toUpperCase())) return;
+                if (part.toUpperCase() === 'ST1' || part.toUpperCase() === 'IES2') return;
+                if (CODE_RE.test(part)) codes.push(part);
+            });
+            return codes;
+        }
+
+        function sheetToMatrix(sheet) {
+            const ref = sheet['!ref'];
+            if (!ref) return [];
+            const range = XLSX.utils.decode_range(ref);
+            const rows = [];
+            for (let R = range.s.r; R <= range.e.r; R++) {
+                const row = [];
+                for (let C = range.s.c; C <= Math.min(range.e.c, 60); C++) {
+                    const cell = sheet[XLSX.utils.encode_cell({ r: R, c: C })];
+                    row.push(cell ? (cell.v !== undefined ? cell.v : null) : null);
+                }
+                rows.push(row);
+            }
+            return rows;
+        }
+
+        function cellStr(v) {
+            if (v === null || v === undefined) return '';
+            return String(v).trim();
+        }
+
+        // ---------- Format detection ----------
+        function detectFlatSheet(workbook) {
+            const name = workbook.SheetNames.find(n => n.includes('每個老師監考表'));
+            if (name) {
+                const sheet = workbook.Sheets[name];
+                const json = XLSX.utils.sheet_to_json(sheet, { raw: false, defval: '' });
+                if (json.length && (json[0]['監考老師'] !== undefined || json[0]['日期'] !== undefined)) {
+                    return name;
+                }
+                // header may not be first data row — check keys from sheet_to_json
+                if (json.length) {
+                    const keys = Object.keys(json[0]);
+                    if (keys.some(k => k.includes('監考老師')) && keys.some(k => k.includes('日期'))) return name;
+                }
+            }
+            // Fallback: first sheet with those columns
+            for (const sn of workbook.SheetNames) {
+                const json = XLSX.utils.sheet_to_json(workbook.Sheets[sn], { raw: false, defval: '' });
+                if (!json.length) continue;
+                const keys = Object.keys(json[0]);
+                if (keys.includes('監考老師') && keys.includes('日期') && (keys.includes('到場') || keys.includes('地點'))) {
+                    return sn;
+                }
+            }
+            return null;
+        }
+
+        function detectMasterSchedule(workbook) {
+            const names = workbook.SheetNames;
+            const hasP1 = names.some(n => /^TEACHERS\s*P\.?\s*1$/i.test(n.trim()) || n.trim() === 'TEACHERS P.1');
+            if (hasP1) return true;
+            // HALL / SAR header pattern
+            for (const sn of names) {
+                if (/By Teachers code/i.test(sn)) continue;
+                const matrix = sheetToMatrix(workbook.Sheets[sn]);
+                if (matrix.length < 7) continue;
+                const row4 = (matrix[3] || []).map(cellStr);
+                const row6 = (matrix[5] || []).map(cellStr);
+                if (row4.some(v => v === 'HALL') && row4.some(v => v === 'SAR') && row6.some(v => /SUBJECT/i.test(v))) {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        function buildNameMap(workbook) {
+            const map = {};
+            const sn = workbook.SheetNames.find(n => /By Teachers code/i.test(n));
+            if (!sn) return map;
+            const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sn], { defval: '', raw: true });
+            rows.forEach(row => {
+                const code = row['Code'] ?? row['code'] ?? row['老師編號'];
+                const name = row["Teachers' Name"] ?? row['Teachers Name'] ?? row['Name'] ?? row['老師姓名'] ?? row['姓名'];
+                if (code === null || code === undefined || code === '' || code === 'Code') return;
+                const c = String(typeof code === 'number' ? Math.round(code) : code).trim();
+                if (!c || !CODE_RE.test(c)) return;
+                const nm = cellStr(name);
+                if (nm && nm !== '#REF!' && !/^#/.test(nm)) map[c] = nm;
+            });
+            return map;
+        }
+
+        // ---------- Flat parser ----------
+        function parseFlatWorkbook(workbook, sheetName) {
+            const sheet = workbook.Sheets[sheetName];
+            // raw:true so dates come as Date/serial; avoids locale M/D/Y ambiguity
+            let rawData = XLSX.utils.sheet_to_json(sheet, { raw: true, defval: '' });
+            if (!rawData.length) throw new Error('平面表工作表內無有效數據。');
+
+            let lastTeacher = '';
+            const duties = [];
+            rawData.forEach(row => {
+                let t = row['監考老師'] !== undefined ? String(row['監考老師']).trim() : '';
+                if (t) lastTeacher = t;
+                else if (lastTeacher) t = lastTeacher;
+                if (!t) return;
+
+                const date = parseDateCell(row['日期']) || normalizeExcelDate(row['日期']);
+                if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+                // sanity: reject impossible months from mis-parsed strings
+                const mo = +date.slice(5, 7);
+                if (mo < 1 || mo > 12) return;
+
+                const startTime = formatTimeValue(row['到場']);
+                const endTime = formatTimeValue(row['結束']);
+                const location = cellStr(row['地點']) || '--';
+                const subject = cellStr(row['科目']) || '--';
+                const role = cellStr(row['崗位']) || '監考員';
+                const grade = cellStr(row['級號']);
+                const klass = cellStr(row['班/組別']);
+                let gradeClass = '';
+                if (grade || klass) gradeClass = `${grade} ${klass}`.trim();
+
+                // teacher may be "218" or "218 — Name"
+                let teacherCode = t;
+                let teacherName = teacherNameMap[t] || '';
+                const tm = t.match(/^(\d{1,3})\s*[—\-:]\s*(.+)$/);
+                if (tm) {
+                    teacherCode = tm[1];
+                    teacherName = tm[2].trim();
+                } else if (CODE_RE.test(t)) {
+                    teacherCode = t;
+                    teacherName = teacherNameMap[t] || '';
+                }
+
+                duties.push({
+                    teacherCode,
+                    teacherName,
+                    date,
+                    startTime,
+                    endTime,
+                    location,
+                    subject,
+                    role,
+                    gradeClass
+                });
+            });
+            return duties;
+        }
+
+        // ---------- Master parser ----------
+        function buildColMeta(matrix) {
+            const meta = {};
+            const row4 = matrix[3] || [];
+            const row5 = matrix[4] || [];
+
+            for (let c = 2; c <= 6; c++) {
+                meta[c] = { kind: 'HALL', location: 'HALL', gradeClass: '', isIc: c === 2, isTime: false, isSupport: false };
+            }
+            for (let c = 8; c <= 11; c++) {
+                meta[c] = { kind: 'SAR', location: 'SAR', gradeClass: '', isIc: c === 8, isTime: false, isSupport: false };
+            }
+
+            let lastRoomLoc = null;
+            const floorLabels = new Set(['1/F', '2/F', '3/F', '4/F', '6/F']);
+            const specialLocs = new Set(['PHY LAB', 'PHY. LAB.', 'PHY.LAB.', 'Art Room', 'Discipline', 'STANDBY']);
+
+            for (let c = 13; c < Math.max(row4.length, row5.length, 55); c++) {
+                const r4 = row4[c];
+                const r5 = row5[c];
+                const r4s = cellStr(r4);
+                const r5s = cellStr(r5);
+
+                if (r5s.toLowerCase() === 'time') {
+                    meta[c] = { kind: 'TIME', location: lastRoomLoc || '', gradeClass: '', isIc: false, isTime: true, isSupport: false };
+                    continue;
+                }
+
+                // Room number in r4
+                let loc = null;
+                let grade = r5s;
+                if (typeof r4 === 'number' || /^\d{3}$/.test(r4s)) {
+                    loc = typeof r4 === 'number' ? String(Math.round(r4)) : r4s;
+                    lastRoomLoc = loc;
+                } else if (specialLocs.has(r4s)) {
+                    loc = r4s.replace(/\./g, '').replace(/\s+/g, ' ').trim();
+                    if (loc === 'PHY LAB' || loc === 'PHY LAB') loc = 'PHY LAB';
+                    lastRoomLoc = loc;
+                } else if (floorLabels.has(r4s)) {
+                    // 6/F with room number in r5 (e.g. 601)
+                    if (typeof r5 === 'number' || /^\d{3}$/.test(r5s)) {
+                        loc = typeof r5 === 'number' ? String(Math.round(r5)) : r5s;
+                        lastRoomLoc = loc;
+                        grade = '';
+                        meta[c] = { kind: 'ROOM', location: loc, gradeClass: '', isIc: false, isTime: false, isSupport: false };
+                        continue;
+                    }
+                    meta[c] = { kind: 'SUPPORT', location: r4s + ' Support', gradeClass: '', isIc: false, isTime: false, isSupport: true };
+                    continue;
+                } else if (!r4s && (typeof r5 === 'number' || /^\d{3}$/.test(r5s))) {
+                    loc = typeof r5 === 'number' ? String(Math.round(r5)) : r5s;
+                    lastRoomLoc = loc;
+                    grade = '';
+                } else if (r5s.toLowerCase() === 'support') {
+                    meta[c] = { kind: 'SUPPORT', location: 'Support', gradeClass: '', isIc: false, isTime: false, isSupport: true };
+                    continue;
+                }
+
+                if (loc) {
+                    const g = (grade && !/^(support|time)$/i.test(grade)) ? grade : '';
+                    meta[c] = { kind: 'ROOM', location: loc, gradeClass: g, isIc: false, isTime: false, isSupport: false };
+                }
+            }
+            return meta;
+        }
+
+        function pickSubjectSummary(subs) {
+            if (!subs || !subs.length) return { subject: '', start: '', end: '' };
+            const withTime = subs.filter(s => s.start);
+            const use = withTime.length ? withTime : subs;
+            const subject = use.map(s => s.subject).filter(Boolean).join('; ');
+            return { subject, start: use[0].start || '', end: use[0].end || '' };
+        }
+
+        function parseMasterSheetP1(sheet) {
+            const matrix = sheetToMatrix(sheet);
+            if (matrix.length < 7) return [];
+            const meta = buildColMeta(matrix);
+            const duties = [];
+            let currentDate = null;
+
+            for (let r = 6; r < matrix.length; r++) {
+                const row = matrix[r] || [];
+                const pd = parseDateCell(row[0]);
+                if (pd) currentDate = pd;
+                if (!currentDate) continue;
+
+                let hasContent = false;
+                for (let c = 1; c < Math.min(row.length, 55); c++) {
+                    if (row[c] !== null && row[c] !== undefined && row[c] !== '' && row[c] !== 0) {
+                        hasContent = true; break;
+                    }
+                }
+                if (!hasContent) continue;
+
+                const hallInfo = pickSubjectSummary(parseSubjectTime(row[1]));
+                const sarInfo = pickSubjectSummary(parseSubjectTime(row[7]));
+                const roomInfo = pickSubjectSummary(parseSubjectTime(row[12]));
+
+                const timeByCol = {};
+                Object.keys(meta).forEach(ck => {
+                    const c = +ck;
+                    const m = meta[c];
+                    if (!m.isTime) return;
+                    const tv = cellStr(row[c]);
+                    const mm = tv.match(TIME_RE);
+                    if (mm) timeByCol[c] = { start: mm[1], end: mm[2] };
+                });
+
+                Object.keys(meta).forEach(ck => {
+                    const c = +ck;
+                    const m = meta[c];
+                    if (m.isTime) return;
+                    const val = row[c];
+
+                    // 校本問卷調查 occupying a teacher slot
+                    if (val && /問卷/.test(String(val))) {
+                        duties.push({
+                            teacherCode: '',
+                            teacherName: '',
+                            date: currentDate,
+                            startTime: '',
+                            endTime: '',
+                            location: m.location,
+                            subject: '校本問卷調查',
+                            role: '問卷',
+                            gradeClass: m.gradeClass || ''
+                        });
+                        return;
+                    }
+
+                    // Speaking with embedded codes in a room/subject spill cell
+                    if (val && /Speaking/i.test(String(val))) {
+                        const text = String(val);
+                        const tm = text.match(TIME_RE) || text.match(/(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})/);
+                        const codes = [];
+                        text.split(/[\n,;+/，、\s]+/).forEach(p => {
+                            p = p.trim();
+                            if (CODE_RE.test(p)) codes.push(p);
+                        });
+                        const locMatch = text.match(/(\d+(?:\/F|F)?\s*floor|4th floor|[A-Z]{2,}.*LAB|Room\s*\d+)/i);
+                        const loc = locMatch ? locMatch[0] : (m.location || 'Special');
+                        codes.forEach(code => {
+                            duties.push({
+                                teacherCode: code,
+                                teacherName: teacherNameMap[code] || '',
+                                date: currentDate,
+                                startTime: tm ? tm[1] : '',
+                                endTime: tm ? tm[2] : '',
+                                location: loc,
+                                subject: 'S6 Speaking',
+                                role: '監考員',
+                                gradeClass: 'S6'
+                            });
+                        });
+                        return;
+                    }
+
+                    const codes = extractTeacherCodes(val);
+                    if (!codes.length) return;
+
+                    let subj = '', st = '', en = '';
+                    if (m.kind === 'HALL') {
+                        subj = hallInfo.subject; st = hallInfo.start; en = hallInfo.end;
+                    } else if (m.kind === 'SAR') {
+                        subj = sarInfo.subject; st = sarInfo.start; en = sarInfo.end;
+                    } else {
+                        subj = roomInfo.subject; st = roomInfo.start; en = roomInfo.end;
+                        for (const tc of Object.keys(timeByCol).map(Number).sort((a, b) => a - b)) {
+                            if (tc > c && tc - c <= 8) {
+                                st = timeByCol[tc].start;
+                                en = timeByCol[tc].end;
+                                break;
+                            }
+                        }
+                        if ((m.location === 'STANDBY' || m.location === 'Discipline' || m.location === 'Art Room') && !subj) {
+                            subj = m.location === 'STANDBY' ? '後備當值' : m.location;
+                        }
+                    }
+
+                    let role = '監考員';
+                    if (m.isIc) role = 'i/c';
+                    if (m.isSupport) role = '支援';
+                    if (m.location === 'STANDBY') role = '後備';
+                    if (m.location === 'Discipline') role = '訓導';
+                    if (/SEN/i.test(m.gradeClass || '') || m.location === '407') {
+                        if (role === '監考員') role = 'SEN監考';
+                    }
+
+                    codes.forEach(code => {
+                        duties.push({
+                            teacherCode: code,
+                            teacherName: teacherNameMap[code] || '',
+                            date: currentDate,
+                            startTime: st,
+                            endTime: en,
+                            location: m.location,
+                            subject: subj || '--',
+                            role,
+                            gradeClass: m.gradeClass || ''
+                        });
+                    });
+                });
+            }
+            return duties;
+        }
+
+        function parseMasterSheetP2(sheet) {
+            const matrix = sheetToMatrix(sheet);
+            if (matrix.length < 6) return [];
+            const row4 = matrix[3] || [];
+            const row5 = matrix[4] || [];
+            const blocks = [];
+            let c = 0;
+            while (c < row4.length) {
+                const r4s = cellStr(row4[c]);
+                if (r4s && !/^TIME$/i.test(r4s) && !/^INV/i.test(r4s)) {
+                    let invCol = null;
+                    let startCol = c;
+                    let endCol = c + 2;
+                    for (let cc = c; cc < Math.min(c + 6, row5.length); cc++) {
+                        const r5s = cellStr(row5[cc]);
+                        if (/^TIME$/i.test(r5s) && startCol === c) startCol = cc;
+                        if (/^INV/i.test(r5s)) invCol = cc;
+                    }
+                    // Typical: TIME at c, '-' at c+1, end time at c+2, INV at c+3
+                    if (invCol === null) invCol = c + 3;
+                    endCol = invCol - 1;
+                    // find start time col: first TIME header in block
+                    for (let cc = c; cc < invCol; cc++) {
+                        if (/^TIME$/i.test(cellStr(row5[cc]))) { startCol = cc; break; }
+                    }
+                    blocks.push({ location: r4s, startCol, endCol, invCol });
+                    c = invCol + 1;
+                } else {
+                    c++;
+                }
+            }
+
+            const duties = [];
+            let currentDate = null;
+            let subj = '';
+            for (let r = 5; r < matrix.length; r++) {
+                const row = matrix[r] || [];
+                const pd = parseDateCell(row[0]);
+                if (pd) currentDate = pd;
+                if (!currentDate) continue;
+                if (row[1] !== null && row[1] !== undefined && cellStr(row[1])) {
+                    subj = cellStr(row[1]).replace(/\n/g, ' ');
+                }
+                blocks.forEach(blk => {
+                    const codes = extractTeacherCodes(row[blk.invCol]);
+                    if (!codes.length) return;
+                    const st = formatTimeValue(row[blk.startCol]);
+                    const en = formatTimeValue(row[blk.endCol]);
+                    codes.forEach(code => {
+                        duties.push({
+                            teacherCode: code,
+                            teacherName: teacherNameMap[code] || '',
+                            date: currentDate,
+                            startTime: st,
+                            endTime: en,
+                            location: blk.location,
+                            subject: subj || '--',
+                            role: 'SEN監考',
+                            gradeClass: 'S6'
+                        });
+                    });
+                });
+            }
+            return duties;
+        }
+
+        function findMasterDutySheets(workbook) {
+            const result = { p1: [], p2: [], similar: [] };
+            workbook.SheetNames.forEach(sn => {
+                const t = sn.trim();
+                if (/^TEACHERS\s*P\.?\s*1$/i.test(t) || t === 'TEACHERS P.1') result.p1.push(sn);
+                else if (/^TEACHERS\s*P\.?\s*2$/i.test(t) || t === 'TEACHERS P.2') result.p2.push(sn);
+                else if (/S1.*1st\s*Term\s*TEST/i.test(t) || /1st Term TEST/i.test(t)) {
+                    const matrix = sheetToMatrix(workbook.Sheets[sn]);
+                    const row4 = (matrix[3] || []).map(cellStr);
+                    if (row4.some(v => v === 'HALL') && row4.some(v => v === 'SAR')) result.similar.push(sn);
+                }
+            });
+            return result;
+        }
+
+        function dedupeDuties(list) {
+            const seen = new Set();
+            const out = [];
+            list.forEach(d => {
+                if (!d.teacherCode) return;
+                const key = [d.teacherCode, d.date, d.startTime, d.endTime, d.location, d.subject, d.role].join('|');
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push(d);
+            });
+            return out;
+        }
+
+        function parseMasterWorkbook(workbook) {
+            teacherNameMap = Object.assign(teacherNameMap, buildNameMap(workbook));
+            const sheets = findMasterDutySheets(workbook);
+            let duties = [];
+
+            sheets.p1.forEach(sn => {
+                duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn]));
+            });
+            // Similar HALL/SAR sheets (e.g. S1 - 5 1st Term TEST) — include if present
+            sheets.similar.forEach(sn => {
+                // Avoid double-count if it's somehow the same as P.1
+                if (sheets.p1.includes(sn)) return;
+                duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn]));
+            });
+            sheets.p2.forEach(sn => {
+                duties = duties.concat(parseMasterSheetP2(workbook.Sheets[sn]));
+            });
+
+            // If no named P.1, try any HALL/SAR sheet
+            if (!sheets.p1.length && !sheets.similar.length) {
+                for (const sn of workbook.SheetNames) {
+                    if (/By Teachers code/i.test(sn)) continue;
+                    const matrix = sheetToMatrix(workbook.Sheets[sn]);
+                    const row4 = (matrix[3] || []).map(cellStr);
+                    if (row4.some(v => v === 'HALL') && row4.some(v => v === 'SAR')) {
+                        duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn]));
+                    }
+                }
+            }
+
+            duties = dedupeDuties(duties);
+            // Attach names
+            duties.forEach(d => {
+                if (!d.teacherName && teacherNameMap[d.teacherCode]) {
+                    d.teacherName = teacherNameMap[d.teacherCode];
+                }
+            });
+            if (!duties.length) throw new Error('官方總表未能解析出監考職務（請確認含 TEACHERS P.1）。');
+            return duties;
+        }
+
+        // ---------- Main parse entry ----------
+        function parseExcelData(arrayBuffer, fileName) {
+            const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: false });
+            teacherNameMap = buildNameMap(workbook);
+
+            const flatSheet = detectFlatSheet(workbook);
+            let duties;
+            let format;
+
+            if (flatSheet) {
+                duties = parseFlatWorkbook(workbook, flatSheet);
+                format = 'flat';
+                // If flat yielded nothing meaningful but master exists, fall through
+                if (!duties.length && detectMasterSchedule(workbook)) {
+                    duties = parseMasterWorkbook(workbook);
+                    format = 'master';
+                }
+            } else if (detectMasterSchedule(workbook)) {
+                duties = parseMasterWorkbook(workbook);
+                format = 'master';
+            } else {
+                // last resort: first sheet as flat-like
+                const sn = workbook.SheetNames[0];
+                duties = parseFlatWorkbook(workbook, sn);
+                format = 'flat';
+            }
+
+            examData = duties;
+            loadedFormat = format;
+            loadedFileName = fileName || loadedFileName || '（未命名）';
+            setupUI();
+            return { format, count: duties.length };
+        }
+
+        function updateStatus(html) {
+            document.getElementById('statusMessage').innerHTML = html;
+        }
+
+        function formatBadgeHtml() {
+            if (loadedFormat === 'master') return '<span class="format-badge master">官方總表</span>';
+            if (loadedFormat === 'flat') return '<span class="format-badge flat">平面表</span>';
+            return '';
+        }
+
+        async function autoLoadFromServer() {
+            let success = false;
+            for (const fileName of possibleFiles) {
                 try {
-                    // 加上隨機時間戳記防瀏覽器快取
-                    const response = await fetch(encodeURI(fileName) + '?t=' + new Date().getTime());
+                    const response = await fetch(encodeURI(fileName) + '?t=' + Date.now());
                     if (response.ok) {
                         const arrayBuffer = await response.arrayBuffer();
-                        parseExcelData(arrayBuffer);
-                        statusDiv.innerHTML = `✅ 已成功自伺服器載入：<b style="color:#27ae60;">${fileName}</b>`;
+                        const result = parseExcelData(arrayBuffer, fileName);
+                        updateStatus(`✅ 已成功自伺服器載入：<b style="color:#27ae60;">${fileName}</b> ${formatBadgeHtml()}<div class="meta-line">共 ${result.count} 筆職務</div>`);
                         success = true;
                         break;
                     }
-                } catch (e) { console.log(`嘗試載入 ${fileName} 失敗，尋找下一個...`); }
+                } catch (e) {
+                    console.log(`嘗試載入 ${fileName} 失敗`, e);
+                }
             }
-
             if (!success) {
-                statusDiv.innerHTML = `⚠️ 尚未在 GitHub 找到預設檔案。請點上方按鈕手動選取 Excel 檔。`;
+                updateStatus('⚠️ 尚未在伺服器找到預設檔案。請點上方按鈕手動選取 Excel（支援官方總表或平面表）。');
                 document.getElementById('results').innerHTML = `<div class="empty-state">請點擊上方按鈕，選取您的 <b>監考總表 Excel 檔案</b> 以解鎖查詢。</div>`;
             }
         }
 
-        // 監聽手動選擇檔案按鈕
-        document.getElementById('fileInput').addEventListener('change', function(e) {
+        document.getElementById('fileInput').addEventListener('change', function (e) {
             const file = e.target.files[0];
             if (!file) return;
-            
-            const statusDiv = document.getElementById('statusMessage');
-            statusDiv.innerText = `正在讀取本機檔案: ${file.name}...`;
-
+            updateStatus(`正在讀取本機檔案: ${file.name}...`);
             const reader = new FileReader();
-            reader.onload = function(e) {
+            reader.onload = function (ev) {
                 try {
-                    parseExcelData(e.target.result);
-                    statusDiv.innerHTML = `✅ 已成功手動載入本機檔案：<b style="color:#27ae60;">${file.name}</b>`;
+                    const result = parseExcelData(ev.target.result, file.name);
+                    updateStatus(`✅ 已成功手動載入：<b style="color:#27ae60;">${file.name}</b> ${formatBadgeHtml()}<div class="meta-line">共 ${result.count} 筆職務 · 偵測格式：${loadedFormat === 'master' ? '官方總表' : '平面表'}</div>`);
                 } catch (err) {
-                    statusDiv.innerHTML = `❌ 檔案解析失敗：${err.message}`;
+                    updateStatus(`❌ 檔案解析失敗：${err.message}`);
                 }
             };
             reader.readAsArrayBuffer(file);
         });
 
-        // 解析 Excel 核心函式
-        function parseExcelData(arrayBuffer) {
-            const workbook = XLSX.read(arrayBuffer, { type: 'array' });
-            const sheet = workbook.Sheets["每個老師監考表"] || workbook.Sheets[workbook.SheetNames[0]];
-            let rawData = XLSX.utils.sheet_to_json(sheet, { raw: false });
-
-            if (!rawData || rawData.length === 0) throw new Error("Excel 工作表內無有效數據。");
-
-            // 自動填補空白老師編號 (向下填補邏輯)
-            let lastTeacher = "";
-            rawData.forEach(row => {
-                if (row['監考老師'] !== undefined && String(row['監考老師']).trim() !== "") {
-                    lastTeacher = String(row['監考老師']).trim();
-                } else if (lastTeacher !== "") {
-                    row['監考老師'] = lastTeacher;
-                }
-            });
-
-            examData = rawData;
-            setupUI();
+        function teacherLabel(code) {
+            const name = teacherNameMap[code];
+            return name ? `${code} — ${name}` : code;
         }
 
         function setupUI() {
             const teacherSet = new Set();
             examData.forEach(row => {
-                if (row['監考老師']) teacherSet.add(String(row['監考老師']).trim());
+                if (row.teacherCode) teacherSet.add(String(row.teacherCode).trim());
             });
-
-            const teachers = Array.from(teacherSet).sort((a, b) => {
-                return a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' });
-            });
+            const teachers = Array.from(teacherSet).sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
 
             const select = document.getElementById('teacherSelect');
-            select.innerHTML = '';
-            teachers.forEach(t => {
-                const option = document.createElement('option');
-                option.value = t; option.textContent = t;
-                select.appendChild(option);
-            });
+            const filterInput = document.getElementById('nameFilter');
 
-            // 預設指定為 218 號老師
-            if (teacherSet.has("218")) { select.value = "218"; }
+            function populateSelect(filterText) {
+                const q = (filterText || '').trim().toLowerCase();
+                select.innerHTML = '';
+                const filtered = teachers.filter(code => {
+                    if (!q) return true;
+                    const label = teacherLabel(code).toLowerCase();
+                    const name = (teacherNameMap[code] || '').toLowerCase();
+                    return code.includes(q) || label.includes(q) || name.includes(q);
+                });
+                if (!filtered.length) {
+                    const opt = document.createElement('option');
+                    opt.value = '';
+                    opt.textContent = '沒有符合的老師';
+                    select.appendChild(opt);
+                    return;
+                }
+                filtered.forEach(t => {
+                    const option = document.createElement('option');
+                    option.value = t;
+                    option.textContent = teacherLabel(t);
+                    select.appendChild(option);
+                });
+                if (filtered.includes('218')) select.value = '218';
+                else select.value = filtered[0];
+            }
 
-            // 預設日期為當日
-            document.getElementById('dateSelect').value = getTodayStr();
+            populateSelect(filterInput.value);
+            filterInput.oninput = () => { populateSelect(filterInput.value); renderResults(); };
+
+            // Default date: today, or first duty date if today has none globally
+            const dateInput = document.getElementById('dateSelect');
+            dateInput.value = getTodayStr();
 
             select.onchange = renderResults;
-            document.getElementById('dateSelect').onchange = renderResults;
-
+            dateInput.onchange = renderResults;
             renderResults();
         }
 
@@ -204,50 +843,46 @@
             const selectedDate = document.getElementById('dateSelect').value;
             const resultsContainer = document.getElementById('results');
 
-            if (!selectedTeacher || examData.length === 0) {
+            if (!selectedTeacher || !examData.length) {
                 resultsContainer.innerHTML = `<div class="empty-state">☝️ 請先完成 Excel 數據載入並選擇老師</div>`;
                 return;
             }
 
             const filteredData = examData.filter(row => {
-                const tName = row['監考老師'] ? String(row['監考老師']).trim() : '';
-                const rawDate = row['日期'] ? String(row['日期']).trim() : '';
-                return (tName === selectedTeacher) && (normalizeExcelDate(rawDate) === selectedDate);
-            });
+                return String(row.teacherCode).trim() === selectedTeacher && row.date === selectedDate;
+            }).sort((a, b) => String(a.startTime).localeCompare(String(b.startTime), undefined, { numeric: true }));
 
-            if (filteredData.length === 0) {
+            if (!filteredData.length) {
+                // Suggest sample dates from this teacher's duties
+                const dates = [...new Set(examData.filter(r => r.teacherCode === selectedTeacher).map(r => r.date))].sort();
+                const hint = dates.length
+                    ? `此老師有職務的日期例如：${dates.slice(0, 5).join('、')}${dates.length > 5 ? '…' : ''}`
+                    : '請確認已載入正確的監考總表。';
                 resultsContainer.innerHTML = `
                     <div class="empty-state">
                         ✅ <b>${selectedDate}</b> 當天沒有您的監考或後備任務紀錄。
-                        <span class="hint-text">💡 提示：如果您想測試功能，請將日期切換至有考試的日期（例如 2026-06-05 或 2026-06-08）。</span>
+                        <span class="hint-text">💡 ${hint}</span>
                     </div>`;
                 return;
             }
 
             let htmlContent = '';
             filteredData.forEach(item => {
-                const role = item['崗位'] ? String(item['崗位']).trim() : '監考員';
-                const rawSubject = item['科目'] ? String(item['科目']).trim() : '';
-                const isStandby = role.includes('後備') || rawSubject.includes('後備');
+                const role = item.role || '監考員';
+                const rawSubject = item.subject || '';
+                const isStandby = role.includes('後備') || rawSubject.includes('後備') || item.location === 'STANDBY';
 
-                const startTime = item['到場'] ? String(item['到場']).trim() : '';
-                const endTime = item['結束'] ? String(item['結束']).trim() : '';
-                let timeStr = "特殊時段";
-                if (startTime && endTime) {
-                    timeStr = `${startTime} - ${endTime}`;
-                } else if (isStandby) {
-                    timeStr = "全日候命";
-                }
+                const startTime = item.startTime || '';
+                const endTime = item.endTime || '';
+                let timeStr = '特殊時段';
+                if (startTime && endTime) timeStr = `${startTime} - ${endTime}`;
+                else if (startTime) timeStr = startTime;
+                else if (isStandby) timeStr = '全日候命';
 
-                const location = item['地點'] ? String(item['地點']).trim() : (isStandby ? '校務處' : '--');
+                const location = item.location || (isStandby ? '校務處' : '--');
                 const subject = rawSubject || (isStandby ? '後備當值' : '--');
-                const grade = item['級號'] ? String(item['級號']).trim() : '--';
-                const klass = item['班/組別'] ? String(item['班/組別']).trim() : '--';
-                
-                let gradeClassStr = '--';
-                if (grade !== '--' || klass !== '--') {
-                    gradeClassStr = `${grade === '--' ? '' : grade} ${klass === '--' ? '' : klass}`.trim();
-                }
+                const gradeClassStr = item.gradeClass || '--';
+                const nameLine = item.teacherName ? `<p><strong>👤 老師：</strong> ${item.teacherCode} — ${item.teacherName}</p>` : '';
 
                 htmlContent += `
                     <div class="card ${isStandby ? 'standby' : ''}">
@@ -256,6 +891,7 @@
                             <span class="tag ${isStandby ? 'standby-tag' : ''}">${role}</span>
                         </div>
                         <div class="card-body">
+                            ${nameLine}
                             <p><strong>📍 地點：</strong> ${location}</p>
                             <p><strong>📚 科目：</strong> ${subject}</p>
                             <p><strong>👥 級別：</strong> ${gradeClassStr}</p>
@@ -263,12 +899,17 @@
                     </div>
                 `;
             });
-
             resultsContainer.innerHTML = htmlContent;
         }
 
-        // 網頁開啟時自動觸發自動載入
         window.onload = autoLoadFromServer;
+
+        // Expose for optional console / self-test hooks
+        window.__examDebug = {
+            getData: () => examData,
+            getFormat: () => loadedFormat,
+            parseExcelData
+        };
     </script>
 </body>
 </html>
