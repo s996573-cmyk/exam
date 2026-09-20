@@ -55,6 +55,10 @@
             <span>💡 可自動載入伺服器檔案，或手動上傳官方監考總表 / 平面表 Excel。</span><br>
             <label class="upload-btn" for="fileInput">📂 選取 Excel 檔案</label>
             <input type="file" id="fileInput" accept=".xlsx, .xls">
+            <div style="margin-top:8px;">
+                <label class="upload-btn" for="nameFileInput" style="background:#7f8c8d;font-size:12px;padding:6px 12px;">👤 上載教師名單（可選）</label>
+                <input type="file" id="nameFileInput" accept=".xlsx, .xls">
+            </div>
             <div id="statusMessage" class="status-text">正在自動偵測伺服器檔案...</div>
         </div>
 
@@ -70,6 +74,13 @@
                 </select>
             </div>
             <div class="form-group">
+                <label for="periodSelect">📆 考期／來源：</label>
+                <select id="periodSelect">
+                    <option value="全部">全部</option>
+                </select>
+                <span class="hint-text">預設為最新年份；選「全部」才會混合各考期。</span>
+            </div>
+            <div class="form-group">
                 <label for="dateSelect">📅 選擇日期：</label>
                 <input type="date" id="dateSelect">
             </div>
@@ -78,7 +89,7 @@
     </div>
 
     <script>
-        /** @type {Array<{teacherCode:string, teacherName?:string, date:string, startTime:string, endTime:string, location:string, subject:string, role:string, gradeClass?:string}>} */
+        /** @type {Array<{teacherCode:string, teacherName?:string, date:string, startTime:string, endTime:string, location:string, subject:string, role:string, gradeClass?:string, sourceSheet?:string}>} */
         let examData = [];
         let teacherNameMap = {}; // code -> name
         let loadedFormat = ''; // 'flat' | 'master'
@@ -286,20 +297,54 @@
             return false;
         }
 
+        function parseTeacherCell(t) {
+            const s = String(t || '').trim();
+            if (!s) return { code: '', name: '' };
+            // 218 — 葉國輝 / 218 - Name / 218–Name / 218: Name
+            const tm = s.match(/^(\d{1,3})\s*[—–\-:－]\s*(.+)$/);
+            if (tm) return { code: tm[1], name: tm[2].trim() };
+            if (CODE_RE.test(s)) return { code: s, name: '' };
+            return { code: s, name: '' };
+        }
+
+        function mergeNameMap(target, src) {
+            Object.keys(src || {}).forEach(k => {
+                if (src[k] && !target[k]) target[k] = src[k];
+                else if (src[k]) target[k] = src[k]; // prefer newer / explicit
+            });
+            return target;
+        }
+
         function buildNameMap(workbook) {
             const map = {};
+            // 1) By Teachers code
             const sn = workbook.SheetNames.find(n => /By Teachers code/i.test(n));
-            if (!sn) return map;
-            const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sn], { defval: '', raw: true });
-            rows.forEach(row => {
-                const code = row['Code'] ?? row['code'] ?? row['老師編號'];
-                const name = row["Teachers' Name"] ?? row['Teachers Name'] ?? row['Name'] ?? row['老師姓名'] ?? row['姓名'];
-                if (code === null || code === undefined || code === '' || code === 'Code') return;
-                const c = String(typeof code === 'number' ? Math.round(code) : code).trim();
-                if (!c || !CODE_RE.test(c)) return;
-                const nm = cellStr(name);
-                if (nm && nm !== '#REF!' && !/^#/.test(nm)) map[c] = nm;
-            });
+            if (sn) {
+                const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sn], { defval: '', raw: true });
+                rows.forEach(row => {
+                    const code = row['Code'] ?? row['code'] ?? row['老師編號'] ?? row['Teacher_Code'];
+                    const name = row["Teachers' Name"] ?? row['Teachers Name'] ?? row['Name'] ?? row['老師姓名'] ?? row['姓名'] ?? row['Teacher_Name'] ?? row['中文／英文顯示'];
+                    if (code === null || code === undefined || code === '' || code === 'Code') return;
+                    const c = String(typeof code === 'number' ? Math.round(code) : code).trim();
+                    if (!c || !CODE_RE.test(c)) return;
+                    const nm = cellStr(name);
+                    if (nm && nm !== '#REF!' && !/^#/.test(nm)) map[c] = nm;
+                });
+            }
+            // 2) 教師名單 (flat companion / query workbook)
+            const sn2 = workbook.SheetNames.find(n => n.trim() === '教師名單' || /教師名單/.test(n));
+            if (sn2) {
+                const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sn2], { defval: '', raw: true });
+                rows.forEach(row => {
+                    const code = row['Teacher_Code'] ?? row['Code'] ?? row['老師編號'] ?? row['code'];
+                    const name = row['中文／英文顯示'] || row['Teacher_Name'] || row['Name'] || row['老師姓名'] || row['姓名'] || '';
+                    if (code === null || code === undefined || code === '') return;
+                    const c = String(typeof code === 'number' ? Math.round(code) : code).trim();
+                    if (!c || !CODE_RE.test(c)) return;
+                    const nm = cellStr(name);
+                    if (nm && nm !== '#REF!' && !/^#/.test(nm)) map[c] = nm;
+                });
+            }
             return map;
         }
 
@@ -320,7 +365,6 @@
 
                 const date = parseDateCell(row['日期']) || normalizeExcelDate(row['日期']);
                 if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
-                // sanity: reject impossible months from mis-parsed strings
                 const mo = +date.slice(5, 7);
                 if (mo < 1 || mo > 12) return;
 
@@ -333,21 +377,18 @@
                 const klass = cellStr(row['班/組別']);
                 let gradeClass = '';
                 if (grade || klass) gradeClass = `${grade} ${klass}`.trim();
+                const sourceSheet = cellStr(row['來源工作表']) || sheetName;
 
-                // teacher may be "218" or "218 — Name"
-                let teacherCode = t;
-                let teacherName = teacherNameMap[t] || '';
-                const tm = t.match(/^(\d{1,3})\s*[—\-:]\s*(.+)$/);
-                if (tm) {
-                    teacherCode = tm[1];
-                    teacherName = tm[2].trim();
-                } else if (CODE_RE.test(t)) {
-                    teacherCode = t;
-                    teacherName = teacherNameMap[t] || '';
-                }
+                const parsed = parseTeacherCell(t);
+                let teacherCode = parsed.code;
+                let teacherName = parsed.name || teacherNameMap[parsed.code] || '';
+                if (parsed.name) teacherNameMap[parsed.code] = parsed.name;
+                else if (teacherNameMap[teacherCode]) teacherName = teacherNameMap[teacherCode];
+
+                if (!teacherCode || !CODE_RE.test(String(teacherCode))) return;
 
                 duties.push({
-                    teacherCode,
+                    teacherCode: String(teacherCode),
                     teacherName,
                     date,
                     startTime,
@@ -355,7 +396,8 @@
                     location,
                     subject,
                     role,
-                    gradeClass
+                    gradeClass,
+                    sourceSheet
                 });
             });
             return duties;
@@ -435,12 +477,55 @@
             return { subject, start: use[0].start || '', end: use[0].end || '' };
         }
 
-        function parseMasterSheetP1(sheet) {
+        /** Match multi-line SUBJECT cell to a room class (3A→S3, 1A→S1, …). */
+        function matchSubjectForClass(subs, gradeClass) {
+            if (!subs || !subs.length) return { subject: '', start: '', end: '' };
+            if (subs.length === 1) {
+                return { subject: subs[0].subject, start: subs[0].start || '', end: subs[0].end || '' };
+            }
+            const gc = cellStr(gradeClass).toUpperCase();
+
+            // Direct class token in subject line (e.g. contains "3A")
+            if (gc) {
+                const tokens = gc.split(/[\/\s]+/).filter(Boolean);
+                for (const tok of tokens) {
+                    if (tok.length < 2) continue;
+                    const hit = subs.find(s => String(s.subject).toUpperCase().includes(tok));
+                    if (hit) return { subject: hit.subject, start: hit.start || '', end: hit.end || '' };
+                }
+            }
+
+            // Form from leading digit(s): 3A→S3; 4A/5A→S4 then S5
+            let forms = [];
+            if (/4\s*\/\s*5|4A\/5A|4B\/5B|4C\/5C|4D\/5D/i.test(gc)) {
+                forms = ['S4', 'S5'];
+            } else {
+                const m = gc.match(/(\d)/);
+                if (m) {
+                    const n = m[1];
+                    forms = ['S' + n];
+                    if (n === '4') forms.push('S5');
+                    if (n === '5') forms.push('S4');
+                }
+            }
+            for (const f of forms) {
+                const re = new RegExp('(?:^|\\s)' + f + '(?:\\s|$)', 'i');
+                const hit = subs.find(s => re.test(s.subject) || String(s.subject).toUpperCase().includes(f));
+                if (hit) return { subject: hit.subject, start: hit.start || '', end: hit.end || '' };
+            }
+
+            const withTime = subs.filter(s => s.start);
+            const use = withTime[0] || subs[0];
+            return { subject: use.subject, start: use.start || '', end: use.end || '' };
+        }
+
+        function parseMasterSheetP1(sheet, sheetName) {
             const matrix = sheetToMatrix(sheet);
             if (matrix.length < 7) return [];
             const meta = buildColMeta(matrix);
             const duties = [];
             let currentDate = null;
+            const src = sheetName || '';
 
             for (let r = 6; r < matrix.length; r++) {
                 const row = matrix[r] || [];
@@ -456,9 +541,11 @@
                 }
                 if (!hasContent) continue;
 
-                const hallInfo = pickSubjectSummary(parseSubjectTime(row[1]));
-                const sarInfo = pickSubjectSummary(parseSubjectTime(row[7]));
-                const roomInfo = pickSubjectSummary(parseSubjectTime(row[12]));
+                const hallSubs = parseSubjectTime(row[1]);
+                const sarSubs = parseSubjectTime(row[7]);
+                const roomSubs = parseSubjectTime(row[12]);
+                const hallInfo = pickSubjectSummary(hallSubs);
+                const sarInfo = pickSubjectSummary(sarSubs);
 
                 const timeByCol = {};
                 Object.keys(meta).forEach(ck => {
@@ -476,23 +563,29 @@
                     if (m.isTime) return;
                     const val = row[c];
 
-                    // 校本問卷調查 occupying a teacher slot
+                    // Skip questionnaire placeholders without teacher codes — do NOT emit
                     if (val && /問卷/.test(String(val))) {
-                        duties.push({
-                            teacherCode: '',
-                            teacherName: '',
-                            date: currentDate,
-                            startTime: '',
-                            endTime: '',
-                            location: m.location,
-                            subject: '校本問卷調查',
-                            role: '問卷',
-                            gradeClass: m.gradeClass || ''
+                        const qCodes = extractTeacherCodes(String(val).replace(/問卷|校本問卷調查/g, ' '));
+                        if (!qCodes.length) return;
+                        // rare: codes embedded with 問卷 text
+                        qCodes.forEach(code => {
+                            duties.push({
+                                teacherCode: code,
+                                teacherName: teacherNameMap[code] || '',
+                                date: currentDate,
+                                startTime: '',
+                                endTime: '',
+                                location: m.location,
+                                subject: '校本問卷調查',
+                                role: '問卷',
+                                gradeClass: m.gradeClass || '',
+                                sourceSheet: src
+                            });
                         });
                         return;
                     }
 
-                    // Speaking with embedded codes in a room/subject spill cell
+                    // Speaking with embedded codes
                     if (val && /Speaking/i.test(String(val))) {
                         const text = String(val);
                         const tm = text.match(TIME_RE) || text.match(/(\d{1,2}:\d{2})\s*[-–—]\s*(\d{1,2}:\d{2})/);
@@ -513,7 +606,8 @@
                                 location: loc,
                                 subject: 'S6 Speaking',
                                 role: '監考員',
-                                gradeClass: 'S6'
+                                gradeClass: 'S6',
+                                sourceSheet: src
                             });
                         });
                         return;
@@ -528,12 +622,19 @@
                     } else if (m.kind === 'SAR') {
                         subj = sarInfo.subject; st = sarInfo.start; en = sarInfo.end;
                     } else {
-                        subj = roomInfo.subject; st = roomInfo.start; en = roomInfo.end;
-                        for (const tc of Object.keys(timeByCol).map(Number).sort((a, b) => a - b)) {
-                            if (tc > c && tc - c <= 8) {
-                                st = timeByCol[tc].start;
-                                en = timeByCol[tc].end;
-                                break;
+                        // ROOM: prefer embedded time from class-matched subject line;
+                        // only fall back to Support Time column if that line has no time.
+                        const matched = matchSubjectForClass(roomSubs, m.gradeClass);
+                        subj = matched.subject;
+                        st = matched.start;
+                        en = matched.end;
+                        if (!st) {
+                            for (const tc of Object.keys(timeByCol).map(Number).sort((a, b) => a - b)) {
+                                if (tc > c && tc - c <= 8) {
+                                    st = timeByCol[tc].start;
+                                    en = timeByCol[tc].end;
+                                    break;
+                                }
                             }
                         }
                         if ((m.location === 'STANDBY' || m.location === 'Discipline' || m.location === 'Art Room') && !subj) {
@@ -560,7 +661,8 @@
                             location: m.location,
                             subject: subj || '--',
                             role,
-                            gradeClass: m.gradeClass || ''
+                            gradeClass: m.gradeClass || '',
+                            sourceSheet: src
                         });
                     });
                 });
@@ -568,7 +670,7 @@
             return duties;
         }
 
-        function parseMasterSheetP2(sheet) {
+        function parseMasterSheetP2(sheet, sheetName) {
             const matrix = sheetToMatrix(sheet);
             if (matrix.length < 6) return [];
             const row4 = matrix[3] || [];
@@ -626,7 +728,8 @@
                             location: blk.location,
                             subject: subj || '--',
                             role: 'SEN監考',
-                            gradeClass: 'S6'
+                            gradeClass: 'S6',
+                            sourceSheet: sheetName || ''
                         });
                     });
                 });
@@ -663,21 +766,21 @@
         }
 
         function parseMasterWorkbook(workbook) {
-            teacherNameMap = Object.assign(teacherNameMap, buildNameMap(workbook));
+            teacherNameMap = mergeNameMap(teacherNameMap, buildNameMap(workbook));
             const sheets = findMasterDutySheets(workbook);
             let duties = [];
 
             sheets.p1.forEach(sn => {
-                duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn]));
+                duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn], sn));
             });
             // Similar HALL/SAR sheets (e.g. S1 - 5 1st Term TEST) — include if present
             sheets.similar.forEach(sn => {
                 // Avoid double-count if it's somehow the same as P.1
                 if (sheets.p1.includes(sn)) return;
-                duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn]));
+                duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn], sn));
             });
             sheets.p2.forEach(sn => {
-                duties = duties.concat(parseMasterSheetP2(workbook.Sheets[sn]));
+                duties = duties.concat(parseMasterSheetP2(workbook.Sheets[sn], sn));
             });
 
             // If no named P.1, try any HALL/SAR sheet
@@ -687,7 +790,7 @@
                     const matrix = sheetToMatrix(workbook.Sheets[sn]);
                     const row4 = (matrix[3] || []).map(cellStr);
                     if (row4.some(v => v === 'HALL') && row4.some(v => v === 'SAR')) {
-                        duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn]));
+                        duties = duties.concat(parseMasterSheetP1(workbook.Sheets[sn], sn));
                     }
                 }
             }
@@ -706,7 +809,7 @@
         // ---------- Main parse entry ----------
         function parseExcelData(arrayBuffer, fileName) {
             const workbook = XLSX.read(arrayBuffer, { type: 'array', cellDates: false });
-            teacherNameMap = buildNameMap(workbook);
+            teacherNameMap = mergeNameMap({}, buildNameMap(workbook));
 
             const flatSheet = detectFlatSheet(workbook);
             let duties;
@@ -785,12 +888,93 @@
             reader.readAsArrayBuffer(file);
         });
 
+        document.getElementById('nameFileInput').addEventListener('change', function (e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function (ev) {
+                try {
+                    const wb = XLSX.read(ev.target.result, { type: 'array', cellDates: false });
+                    const extra = buildNameMap(wb);
+                    // Also accept any sheet with Teacher_Code / Code columns
+                    mergeNameMap(teacherNameMap, extra);
+                    // Refresh names on existing duties
+                    examData.forEach(d => {
+                        if (teacherNameMap[d.teacherCode]) d.teacherName = teacherNameMap[d.teacherCode];
+                    });
+                    if (examData.length) setupUI();
+                    updateStatus(`✅ 已合併教師名單：<b>${file.name}</b>（${Object.keys(extra).length} 筆姓名）` + (loadedFileName ? ` · 目前數據：${loadedFileName} ${formatBadgeHtml()}` : ''));
+                } catch (err) {
+                    updateStatus(`❌ 教師名單載入失敗：${err.message}`);
+                }
+            };
+            reader.readAsArrayBuffer(file);
+        });
+
         function teacherLabel(code) {
             const name = teacherNameMap[code];
             return name ? `${code} — ${name}` : code;
         }
 
+        function dutyYear(d) {
+            const m = String(d.date || '').match(/^(\d{4})/);
+            return m ? m[1] : '';
+        }
+
+        function populatePeriodSelect() {
+            const sel = document.getElementById('periodSelect');
+            if (!sel) return;
+            const years = new Set();
+            const sheets = new Set();
+            examData.forEach(d => {
+                const y = dutyYear(d);
+                if (y) years.add(y);
+                if (d.sourceSheet) sheets.add(d.sourceSheet);
+            });
+            const yearList = Array.from(years).sort();
+            const sheetList = Array.from(sheets).sort();
+            const prev = sel.value;
+            sel.innerHTML = '';
+            const optAll = document.createElement('option');
+            optAll.value = '全部';
+            optAll.textContent = '全部';
+            sel.appendChild(optAll);
+            yearList.forEach(y => {
+                const o = document.createElement('option');
+                o.value = 'year:' + y;
+                o.textContent = y + ' 年';
+                sel.appendChild(o);
+            });
+            sheetList.forEach(sn => {
+                const o = document.createElement('option');
+                o.value = 'sheet:' + sn;
+                o.textContent = '來源：' + sn;
+                sel.appendChild(o);
+            });
+            // Default to newest year
+            const newest = yearList.length ? yearList[yearList.length - 1] : '';
+            if (prev && [...sel.options].some(o => o.value === prev)) sel.value = prev;
+            else if (newest) sel.value = 'year:' + newest;
+            else sel.value = '全部';
+        }
+
+        function periodMatches(row) {
+            const sel = document.getElementById('periodSelect');
+            const v = sel ? sel.value : '全部';
+            if (!v || v === '全部') return true;
+            if (v.startsWith('year:')) return dutyYear(row) === v.slice(5);
+            if (v.startsWith('sheet:')) return (row.sourceSheet || '') === v.slice(6);
+            return true;
+        }
+
         function setupUI() {
+            // Enrich name map from duties that already carry names
+            examData.forEach(row => {
+                if (row.teacherCode && row.teacherName) {
+                    teacherNameMap[row.teacherCode] = row.teacherName;
+                }
+            });
+
             const teacherSet = new Set();
             examData.forEach(row => {
                 if (row.teacherCode) teacherSet.add(String(row.teacherCode).trim());
@@ -799,6 +983,9 @@
 
             const select = document.getElementById('teacherSelect');
             const filterInput = document.getElementById('nameFilter');
+            const periodSel = document.getElementById('periodSelect');
+
+            populatePeriodSelect();
 
             function populateSelect(filterText) {
                 const q = (filterText || '').trim().toLowerCase();
@@ -829,12 +1016,12 @@
             populateSelect(filterInput.value);
             filterInput.oninput = () => { populateSelect(filterInput.value); renderResults(); };
 
-            // Default date: today, or first duty date if today has none globally
             const dateInput = document.getElementById('dateSelect');
             dateInput.value = getTodayStr();
 
             select.onchange = renderResults;
             dateInput.onchange = renderResults;
+            if (periodSel) periodSel.onchange = renderResults;
             renderResults();
         }
 
@@ -849,12 +1036,12 @@
             }
 
             const filteredData = examData.filter(row => {
-                return String(row.teacherCode).trim() === selectedTeacher && row.date === selectedDate;
+                return String(row.teacherCode).trim() === selectedTeacher && row.date === selectedDate && periodMatches(row);
             }).sort((a, b) => String(a.startTime).localeCompare(String(b.startTime), undefined, { numeric: true }));
 
             if (!filteredData.length) {
                 // Suggest sample dates from this teacher's duties
-                const dates = [...new Set(examData.filter(r => r.teacherCode === selectedTeacher).map(r => r.date))].sort();
+                const dates = [...new Set(examData.filter(r => r.teacherCode === selectedTeacher && periodMatches(r)).map(r => r.date))].sort();
                 const hint = dates.length
                     ? `此老師有職務的日期例如：${dates.slice(0, 5).join('、')}${dates.length > 5 ? '…' : ''}`
                     : '請確認已載入正確的監考總表。';
@@ -895,6 +1082,7 @@
                             <p><strong>📍 地點：</strong> ${location}</p>
                             <p><strong>📚 科目：</strong> ${subject}</p>
                             <p><strong>👥 級別：</strong> ${gradeClassStr}</p>
+                            ${item.sourceSheet ? `<div class="meta-line">來源工作表：${item.sourceSheet}</div>` : ''}
                         </div>
                     </div>
                 `;
